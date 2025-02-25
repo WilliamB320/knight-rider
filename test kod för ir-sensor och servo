@@ -1,0 +1,43 @@
+#include <Servo.h>
+
+// Konfiguration
+Servo styrServo;                     // Servomotorn som styr bilen
+const int servoPin = 9;              // Anslutning för servomotorn
+const int sensorHogerPin = A0;       // Sensor för avstånd till högerskanten
+const int sensorVansterPin = A1;     // Sensor för avstånd till vänsterskanten
+
+const int THRESHOLD = 10;            // Tröskelvärde (t.ex. i cm)
+
+void setup() {
+  Serial.begin(9600);
+  styrServo.attach(servoPin);
+  styrServo.write(90);               // Sätt servon i neutral position (räta)
+}
+
+void loop() {
+  // Läs in sensorvärdena
+  int avstandHoger = analogRead(sensorHogerPin);
+  int avstandVanster = analogRead(sensorVansterPin);
+  
+  // Omvandla sensorvärdena till avstånd om nödvändigt
+  // Här antas att de analoga värdena direkt motsvarar avstånd (t.ex. i cm)
+  
+  // Beräkna felvärdet: skillnaden mellan högersidan och vänstersidan
+  int fel = avstandHoger - avstandVanster;
+  
+  // Bestäm styrkommandot baserat på felvärdet
+  if (fel > THRESHOLD) {
+    Serial.println("Sväng höger");  // Om värdet är större än tröskeln, sväng höger
+    styrServo.write(0);             // Exempel: 0 grader för höger sväng
+  } 
+  else if (fel < -THRESHOLD) {
+    Serial.println("Sväng vänster"); // Om värdet är mindre än -tröskeln, sväng vänster
+    styrServo.write(180);           // Exempel: 180 grader för vänster sväng
+  } 
+  else {
+    Serial.println("Kör rakt");      // Om skillnaden är liten, kör rakt
+    styrServo.write(90);            // Neutral position
+  }
+  
+  delay(100);  // Kort fördröjning innan nästa mätning
+}
