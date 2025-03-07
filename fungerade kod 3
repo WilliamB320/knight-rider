@@ -1,0 +1,156 @@
+#include <Wire.h>
+#include <OPT3101.h>
+#include <ESP32Servo.h>
+
+#define SERVO_PIN 9  
+#define MOTOR_IN1 A1  
+#define MOTOR_IN2 A2  
+#define MOTOR_SPEED 8  
+
+Servo myservo;
+OPT3101 sensor;
+
+int servoStraight = 96;  // 🔥 Ökat från 92 till 96 för att korrigera högerdragning
+int servoLeft = 140;   // 🔥 Större sväng åt vänster
+int servoRight = 50;   // 🔥 Mindre sväng åt höger
+int servoPosition = 96;  
+int servoSwing = 5;  // 🔥 Minskat fiskrörelse för mer stabilitet
+
+int lastDistance0 = 600;  
+int lastDistance1 = 600;  
+int lastDistance2 = 600;  
+
+unsigned long lastPreprekaTime = 0;
+const int hinderMin = 100;  
+const int hinderMax = 400;  
+const int motorSpeed = 5;  
+
+bool motorOn = true;
+unsigned long lastMotorToggle = 0;
+const int motorInterval = 200;  
+
+bool fishMode = true;  
+unsigned long lastSensorRead = 0;
+const int sensorInterval = 150;  // 🔥 Snabbare sensoravläsning
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+
+  Serial.println("🔄 Startar...");
+  Wire.begin(A4, A5);
+
+  sensor.init();
+  if (sensor.getLastError()) {
+    Serial.print("❌ Sensorfel: ");
+    Serial.println(sensor.getLastError());
+    while (1);
+  }
+
+  sensor.configureDefault();
+  sensor.setFrameTiming(16);  // 🔥 Snabbare sensoravläsning
+  sensor.setBrightness(OPT3101Brightness::High);
+  sensor.enableTimingGenerator();
+
+  myservo.attach(SERVO_PIN);
+  myservo.write(servoStraight);
+
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+  pinMode(MOTOR_SPEED, OUTPUT);
+  
+  digitalWrite(MOTOR_IN1, HIGH);
+  digitalWrite(MOTOR_IN2, LOW);
+  analogWrite(MOTOR_SPEED, motorSpeed);  
+
+  Serial.println("✅ System klart!");
+  sensor.setChannel(0);
+  sensor.startSample();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  // 🔥 Snabbare sensoravläsning
+  if (currentTime - lastSensorRead > sensorInterval) {
+    lastSensorRead = currentTime;
+
+    if (sensor.isSampleDone()) {
+      sensor.readOutputRegs();
+      int16_t distance = sensor.distanceMillimeters;
+      int currentChannel = sensor.channelUsed;
+
+      Serial.print("📡 Kanal: ");
+      Serial.print(currentChannel);
+      Serial.print(" | Avstånd: ");
+      Serial.print(distance);
+      Serial.println(" mm");
+
+      if (distance == 0) {
+        Serial.println("⚠️ Ogiltigt värde - ignorerar!");
+        sensor.startSample();
+        return;
+      }
+
+      // ✅ Om inga hinder – aktivera fiskrörelse
+      if (lastDistance0 > hinderMax && lastDistance1 > hinderMax && lastDistance2 > hinderMax) {  
+        if (!fishMode) {
+          Serial.println("🔄 Inga hinder, återgår till fiskrörelse.");
+          fishMode = true;
+        }
+      } else {
+        fishMode = false;  // 🔥 Stänger av fiskrörelsen om hinder finns
+      }
+
+      // ✅ Om hinder till höger (100–400 mm), sväng vänster SNABBT
+      if (lastDistance0 >= hinderMin && lastDistance0 <= hinderMax) {
+        Serial.println("➡️ Hinder höger! SNABB VÄNSTER.");
+        myservo.write(servoLeft);
+      }
+
+      // ✅ Om hinder till vänster (100–400 mm), sväng höger SNABBT
+      if (lastDistance2 >= hinderMin && lastDistance2 <= hinderMax) {
+        Serial.println("⬅️ Hinder vänster! SNABB HÖGER.");
+        myservo.write(servoRight);
+      }
+
+      // ✅ Om hinder RAKT FRAM (≤ 100 mm), motor STOPP
+      if (lastDistance1 <= hinderMin) {
+        Serial.println("🚨 Hinder FRAMFÖR! Motor STOPP!");
+        digitalWrite(MOTOR_IN1, LOW);
+        digitalWrite(MOTOR_IN2, LOW);
+        analogWrite(MOTOR_SPEED, 0);  
+      }
+
+      lastDistance0 = distance;
+
+      // ✅ Växla kanal för att mäta nästa område
+      if (currentChannel == 0) {
+        sensor.setChannel(1);
+      } else if (currentChannel == 1) {
+        sensor.setChannel(2);
+      } else {
+        sensor.setChannel(0);
+      }
+
+      sensor.startSample();
+    }
+  }
+
+  // ✅ Fiskrörelse: Servo gungar vänster-höger om inga hinder finns
+  if (fishMode) {
+    static bool swingRight = true;
+    static unsigned long lastSwingTime = 0;
+    const int swingInterval = 350;  // 🔥 Ännu snabbare gungning för bättre styrning
+
+    if (millis() - lastSwingTime > swingInterval) {
+      if (swingRight) {
+        myservo.write(servoStraight + servoSwing);
+      } else {
+        myservo.write(servoStraight - (servoSwing - 2));  // 🔥 Gör vänstersväng lite svagare
+      }
+      swingRight = !swingRight;
+      lastSwingTime = millis();
+    }
+  }
+}
