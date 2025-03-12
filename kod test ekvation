@@ -1,0 +1,164 @@
+#include <Wire.h>
+#include <OPT3101.h>
+#include <ESP32Servo.h>
+
+#define SERVO_PIN 9  
+#define MOTOR_IN1 A1  
+#define MOTOR_IN2 A2  
+#define MOTOR_SPEED 8  
+
+Servo myservo;
+OPT3101 sensor;
+
+// Servo-inställningar
+int servoStraight = 90;   // Rakt fram (önskad position om bilen är centrerad)
+int servoLeft = 135;      // Max vänstersväng (för att åtgärda att bilen är för nära höger)
+int servoRight = 45;      // Max högersväng (för att åtgärda att bilen är för nära vänster)
+int servoPosition = 90;   // Aktuell servovinkel
+
+// Variabler för sensoravläsningar (i mm)
+// Kanal 0: Höger, Kanal 1: Fram, Kanal 2: Vänster
+int lastDistance0 = 600;  // Höger
+int lastDistance1 = 600;  // Fram
+int lastDistance2 = 600;  // Vänster
+
+unsigned long lastMotorToggle = 0;
+const int motorInterval = 150;  // Kortare tidsintervall för motorpulser
+
+// Tröskelvärden (i mm)
+const int hinderMin = 100;  
+const int hinderMax = 400;  
+
+int motorSpeed = 5;  // Mycket låg hastighet
+bool motorOn = true;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  Serial.println("🔄 Startar...");
+  Wire.begin(A4, A5);
+
+  sensor.init();
+  if (sensor.getLastError()) {
+    Serial.print("❌ Sensorfel: ");
+    Serial.println(sensor.getLastError());
+    while (1);
+  }
+
+  sensor.configureDefault();
+  sensor.setFrameTiming(32);
+  sensor.setBrightness(OPT3101Brightness::High);
+  sensor.enableTimingGenerator();
+
+  myservo.attach(SERVO_PIN);
+  myservo.write(servoStraight);
+
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+  pinMode(MOTOR_SPEED, OUTPUT);
+  
+  // Starta motorn (förutsatt framåtriktning)
+  digitalWrite(MOTOR_IN1, HIGH);
+  digitalWrite(MOTOR_IN2, LOW);
+  analogWrite(MOTOR_SPEED, motorSpeed);  
+
+  Serial.println("✅ System klart!");
+  // Starta med kanal 0 (höger)
+  sensor.setChannel(0);
+  sensor.startSample();
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  if (sensor.isSampleDone()) {
+    sensor.readOutputRegs();
+    int16_t distance = sensor.distanceMillimeters;
+    int currentChannel = sensor.channelUsed;
+
+    // Om ogiltigt värde, hoppa över denna mätning
+    if (distance == 0) {
+      Serial.println("⚠️ Ogiltigt värde - ignorerar!");
+      sensor.startSample();
+      delay(100);
+      return;
+    }
+
+    // Uppdatera mätvärden för respektive kanal
+    if (currentChannel == 0) {
+      lastDistance0 = distance;  // Höger
+    } else if (currentChannel == 1) {
+      lastDistance1 = distance;  // Fram
+    } else if (currentChannel == 2) {
+      lastDistance2 = distance;  // Vänster
+    }
+
+    // Debugutskrift för aktuell kanal och avstånd
+    Serial.print("📡 Kanal: ");
+    Serial.print(currentChannel);
+    Serial.print(" | Avstånd: ");
+    Serial.print(distance);
+    Serial.println(" mm");
+
+    // Växla till nästa kanal (0->1->2->0...)
+    if (currentChannel == 0) {
+      sensor.setChannel(1);
+    } else if (currentChannel == 1) {
+      sensor.setChannel(2);
+    } else {
+      sensor.setChannel(0);
+    }
+    sensor.startSample();
+
+    // Om ett hinder upptäcks rakt fram, stanna motorn
+    if (lastDistance1 <= hinderMin) {
+      Serial.println("🚨 Hinder FRAMFÖR! Motor STOPP!");
+      digitalWrite(MOTOR_IN1, LOW);
+      digitalWrite(MOTOR_IN2, LOW);
+      analogWrite(MOTOR_SPEED, 0);
+    } else {
+      // Center-ekvation:
+      // Vi vill att bilen ska vara centrerad mellan vänster och höger, dvs.
+      // lastDistance2 (vänster) bör vara lika med lastDistance0 (höger).
+      // Fel = lastDistance2 - lastDistance0; om bilen är centrerad blir fel 0.
+      int error = lastDistance2 - lastDistance0;
+      
+      // Inför en deadband för små fel (t.ex. ±15 mm)
+      if (abs(error) < 15) {
+        error = 0;
+      }
+      
+      // Center-ekvationen: beräkna ny servovinkel
+      // Om bilen är centrerad (error=0) blir newServo = servoStraight.
+      float Kp = 0.15;  
+      int newServo = servoStraight + (int)(Kp * error);
+      
+      // Begränsa servovinkeln till intervallet [servoRight, servoLeft]
+      if (newServo < servoRight) newServo = servoRight;
+      if (newServo > servoLeft) newServo = servoLeft;
+      
+      // Uppdatera servovinkeln om den har ändrats
+      if (servoPosition != newServo) {
+        servoPosition = newServo;
+        myservo.write(servoPosition);
+        Serial.print("Servo justerat till: ");
+        Serial.println(servoPosition);
+      }
+      
+      // Motorstyrning med pulserande hastighet
+      if (currentTime - lastMotorToggle > motorInterval) {
+        motorOn = !motorOn;
+        if (motorOn) {
+          digitalWrite(MOTOR_IN1, HIGH);
+          digitalWrite(MOTOR_IN2, LOW);
+          analogWrite(MOTOR_SPEED, motorSpeed);
+        } else {
+          analogWrite(MOTOR_SPEED, 0);
+        }
+        lastMotorToggle = currentTime;
+      }
+    }
+    delay(100);  // Kortare delay för snabbare reaktion
+  }
+}
