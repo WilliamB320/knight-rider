@@ -29,10 +29,10 @@ const int NotSafe = 600;   // Nedre gräns för att trigga sväng
 enum DriveState { FORWARD, STOPPED, REVERSING };
 DriveState driveState = FORWARD;
 unsigned long stateChangeTime = 0;
-const unsigned long stopDuration = 500; // 2 sekunder i stoppat läge innan backning
+const unsigned long stopDuration = 2000; // 2 sekunder i stoppat läge innan backning
 
 // --- Motorinställningar ---
-int motorSpeedVal = 250;  // PWM-värde (0-255); justera efter behov
+int motorSpeedVal = 225;  // PWM-värde (0-255); justera efter behov
 
 void setup() {
   Serial.begin(115200);
@@ -113,7 +113,7 @@ void loop() {
     // --- State Machine ---
     if (driveState == FORWARD) {
       // Om frontavståndet är under 50 mm, stanna bilen
-      if (sensorFront < 75) {
+      if (sensorFront < 50) {
         Serial.println("🚨 Hinder FRAMFÖR! Stoppar bilen.");
         driveState = STOPPED;
         stateChangeTime = currentTime;
