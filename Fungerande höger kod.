@@ -22,17 +22,17 @@ int sensorFront = 800;
 int sensorLeft  = 800;
 
 // --- Tröskelvärden för mapping (justera efter behov) ---
-const int Safe    = 800;   // Övre gräns för "säkert" avstånd
-const int NotSafe = 600;   // Nedre gräns för att trigga sväng
+const int Safe    = 400;   // Övre gräns för "säkert" avstånd
+const int NotSafe = 300;   // Nedre gräns för att trigga sväng
 
 // --- State machine för körning ---
 enum DriveState { FORWARD, STOPPED, REVERSING };
 DriveState driveState = FORWARD;
 unsigned long stateChangeTime = 0;
-const unsigned long stopDuration = 2000; // 2 sekunder i stoppat läge innan backning
+const unsigned long stopDuration = 1000; // 2 sekunder i stoppat läge innan backning
 
 // --- Motorinställningar ---
-int motorSpeedVal = 225;  // PWM-värde (0-255); justera efter behov
+int motorSpeedVal = 200;  // PWM-värde (0-255); justera efter behov
 
 void setup() {
   Serial.begin(115200);
