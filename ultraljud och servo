@@ -1,0 +1,126 @@
+#include <ESP32Servo.h>
+
+
+
+
+
+
+// Definicije pinova za ultrazvučne senzore
+#define TRIG_FRONT 13
+#define ECHO_FRONT 12
+
+// Senzor s lijeve strane
+#define TRIG_LEFT 9
+#define ECHO_LEFT 8
+
+// Senzor s desne strane
+#define TRIG_RIGHT 7
+#define ECHO_RIGHT 6
+
+// Definicija pina na koji je priključen servo motor
+#define SERVO_PIN 5
+
+// Prag detekcije prepreke u centimetrima – prilagodi prema potrebama
+#define OBSTACLE_THRESHOLD 10
+
+// Kreiramo servo objekt
+Servo myservo;
+
+// Funkcija koja pokreće senzor i vraća izmjerenu pulslengu (u mikrosekundama)
+long measurePulse(int trigPin, int echoPin) {
+  long duration;
+  // Osiguravamo da je trig pin nizak
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  // Šaljemo 10 mikrosekundni puls
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  // Čitamo trajanje pulsa (timeout 30 ms)
+  duration = pulseIn(echoPin, HIGH, 30000);
+  return duration;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("Test HC-SR04 sa tri senzora i Servo Motorom");
+
+  // Postavljamo pinove senzora
+  pinMode(TRIG_FRONT, OUTPUT);
+  pinMode(ECHO_FRONT, INPUT);
+  
+  pinMode(TRIG_LEFT, OUTPUT);
+  pinMode(ECHO_LEFT, INPUT);
+  
+  pinMode(TRIG_RIGHT, OUTPUT);
+  pinMode(ECHO_RIGHT, INPUT);
+
+  // Postavljamo servo motor i inicijaliziramo ga u središnji položaj (90°)
+  myservo.attach(SERVO_PIN);
+  myservo.write(90);
+}
+
+void loop() {
+  long durationFront, durationLeft, durationRight;
+  float distanceFront, distanceLeft, distanceRight;
+  
+  // Mjerenje s prednjim senzorom
+  durationFront = measurePulse(TRIG_FRONT, ECHO_FRONT);
+  if (durationFront > 0)
+    distanceFront = (durationFront * 0.0343) / 2.0;
+  else
+    distanceFront = 0;
+  
+  // Mjerenje s lijevim senzorom
+  durationLeft = measurePulse(TRIG_LEFT, ECHO_LEFT);
+  if (durationLeft > 0)
+    distanceLeft = (durationLeft * 0.0343) / 2.0;
+  else
+    distanceLeft = 0;
+  
+  // Mjerenje s desnim senzorom
+  durationRight = measurePulse(TRIG_RIGHT, ECHO_RIGHT);
+  if (durationRight > 0)
+    distanceRight = (durationRight * 0.0343) / 2.0;
+  else
+    distanceRight = 0;
+  
+  // Ispis očitanih vrijednosti za sve senzore
+  Serial.print("Front - Duration: ");
+  Serial.print(durationFront);
+  Serial.print(" us, Rastojanje: ");
+  Serial.print(distanceFront);
+  Serial.println(" cm");
+  
+  Serial.print("Lijevi - Duration: ");
+  Serial.print(durationLeft);
+  Serial.print(" us, Rastojanje: ");
+  Serial.print(distanceLeft);
+  Serial.println(" cm");
+  
+  Serial.print("Desni - Duration: ");
+  Serial.print(durationRight);
+  Serial.print(" us, Rastojanje: ");
+  Serial.print(distanceRight);
+  Serial.println(" cm");
+  
+  // Logika za upravljanje servo motorom na osnovu senzora:
+  // Ako je prepreka na lijevoj strani (rastojanje manje od praga)
+  if (distanceLeft > 0 && distanceLeft < OBSTACLE_THRESHOLD) {
+    Serial.println("Prepreka s lijeve strane! Servo se okreće prema desnoj (0°).");
+    myservo.write(110); // Servo se okreće prema desnoj strani
+  }
+  // Ako je prepreka na desnoj strani
+  else if (distanceRight > 0 && distanceRight < OBSTACLE_THRESHOLD) {
+    Serial.println("Prepreka s desne strane! Servo se okreće prema lijevoj (180°).");
+    myservo.write(70); // Servo se okreće prema lijevoj strani
+  }
+  // Ako nema prepreka sa strane, servo se vraća u središte
+  else {
+    myservo.write(90);
+  }
+  
+  Serial.println("--------------------------");
+  delay(1000); // Pauza između mjerenja
+}
