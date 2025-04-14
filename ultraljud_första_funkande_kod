@@ -1,0 +1,189 @@
+#include <ESP32Servo.h>
+
+// **** Pin-konfiguration ****
+const int TRIG_FRONT = 13;
+const int ECHO_FRONT = 12;
+
+const int TRIG_LEFT  = 10;
+const int ECHO_LEFT  = 8;
+
+const int TRIG_RIGHT = 7;
+const int ECHO_RIGHT = 6;
+
+const int SERVO_PIN  = 9;
+const int MOTOR_SPEED_PIN = A1;  // PWM för motorhastighet
+const int MOTOR_DIR_PIN   = B1;  // Motorriktning
+
+// **** Servo-inställningar ****
+const int servoStraight = 90;       // Hjul i rakt läge
+const int servoLeftMax  = 135;       // Max vänstersväng (svänger mot vänster)
+const int servoRightMax = 45;        // Max högersväng (svänger mot höger)
+int currentServoAngle = servoStraight;  // Aktuell servo-vinkel
+
+// **** Sensorvariabler (i centimeter) ****
+int sensorFront = 80;
+int sensorLeft  = 80;
+int sensorRight = 80;
+
+// **** Laterala trösklar ****
+const int emergencyThreshold = 15;  // Om sensorvärde <30 cm, aktivera nödkorrigering
+
+// För normal proportionell styrning
+const int safeZone  = 35;
+const int notSafe   = 25;
+
+// **** Proportionell styrning ****
+float Kp = 0.4;            // Ökad proportionalfaktor för snabbare korrigering
+float lateralDeadZone = 30; // Om skillnad < 10 cm, ingen korrigering
+
+// **** Motor/Styr State Machine ****
+enum CarState { DRIVING, STOPPED, REVERSING };
+CarState state = DRIVING;
+unsigned long stateStartTime = 0;
+
+// Tidsinställningar (ms)
+const int frontStopDist = 20;
+const int frontClearDist = 30;
+const unsigned long stopWaitTime = 1000;
+const unsigned long reverseTime = 1000;
+
+int motorSpeedVal = 255;   // PWM-värde för motorhastighet
+
+// **** Servo smoothing ****
+const int servoStep = 8;   // Ökat till 5 grader per loop för snabbare justering
+
+// **** Funktion: Läs avstånd från en HC-SR04 sensor (i cm) ****
+long readUltrasonicCM(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH, 30000);
+  long distance = duration / 58;  // Omvandling: us till cm
+  if (duration == 0) {
+    distance = 100;
+  }
+  return distance;
+}
+
+Servo steeringServo;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println("🔄 Startar system...");
+
+  // Initiera pinlägen
+  pinMode(TRIG_FRONT, OUTPUT);
+  pinMode(ECHO_FRONT, INPUT);
+  pinMode(TRIG_LEFT, OUTPUT);
+  pinMode(ECHO_LEFT, INPUT);
+  pinMode(TRIG_RIGHT, OUTPUT);
+  pinMode(ECHO_RIGHT, INPUT);
+  pinMode(MOTOR_SPEED_PIN, OUTPUT);
+  pinMode(MOTOR_DIR_PIN, OUTPUT);
+  
+  // Initiera servo
+  steeringServo.attach(SERVO_PIN);
+  steeringServo.write(servoStraight);
+  
+  // Starta motorn med framåtriktning
+  digitalWrite(MOTOR_DIR_PIN, HIGH);
+  analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+  
+  state = DRIVING;
+  stateStartTime = millis();
+}
+
+void loop() {
+  // ----- Steg 1: Läs sensorvärden -----
+  sensorFront = readUltrasonicCM(TRIG_FRONT, ECHO_FRONT);
+  sensorLeft  = readUltrasonicCM(TRIG_LEFT, ECHO_LEFT);
+  sensorRight = readUltrasonicCM(TRIG_RIGHT, ECHO_RIGHT);
+  
+  Serial.print("Front: "); Serial.print(sensorFront);
+  Serial.print(" cm, Left: "); Serial.print(sensorLeft);
+  Serial.print(" cm, Right: "); Serial.print(sensorRight);
+  Serial.println(" cm");
+  
+  unsigned long currentTime = millis();
+  
+  // ----- Steg 2: Front hinderkontroll med state machine -----
+  if (state == DRIVING) {
+    if (sensorFront < frontStopDist) {
+      Serial.println("🚨 Hinder fram! Stannar bilen.");
+      analogWrite(MOTOR_SPEED_PIN, 0);
+      state = STOPPED;
+      stateStartTime = currentTime;
+    }
+  }
+  else if (state == STOPPED) {
+    if (sensorFront > frontClearDist) {
+      state = DRIVING;
+      digitalWrite(MOTOR_DIR_PIN, HIGH);
+      analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+      stateStartTime = currentTime;
+    }
+    else if (currentTime - stateStartTime > stopWaitTime) {
+      Serial.println("⏱ Hindret kvar – byter till backning.");
+      state = REVERSING;
+      digitalWrite(MOTOR_DIR_PIN, LOW);
+      analogWrite(MOTOR_SPEED_PIN, motorSpeedVal / 2);
+      stateStartTime = currentTime;
+    }
+  }
+  else if (state == REVERSING) {
+    if (sensorFront > frontClearDist) {
+      Serial.println("✅ Vägen klar, återgår till framåtkörning.");
+      state = DRIVING;
+      digitalWrite(MOTOR_DIR_PIN, HIGH);
+      analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+      stateStartTime = currentTime;
+    }
+  }
+  
+  // ----- Steg 3: Beräkna önskad styrning (endast i DRIVING-läge) -----
+  int targetServo = servoStraight;
+  
+  if (state == DRIVING) {
+    // Emergency override: Inverterad logik
+    if (sensorLeft < emergencyThreshold) {
+      targetServo = servoLeftMax;
+      Serial.println("‼️ Akut: Vänster sida för nära – svänger vänster!");
+    }
+    else if (sensorRight < emergencyThreshold) {
+      targetServo = servoRightMax;
+      Serial.println("‼️ Akut: Höger sida för nära – svänger höger!");
+    }
+    else {
+      // Normal proportionell styrning med inverterat feluttryck
+      float error = sensorRight - sensorLeft;
+      if (fabs(error) < lateralDeadZone) {
+        targetServo = servoStraight;
+        Serial.println("✅ Inom deadzone: Håller rakt.");
+      } else {
+        targetServo = servoStraight + (int)(Kp * error);
+      }
+      if (targetServo < servoRightMax) targetServo = servoRightMax;
+      if (targetServo > servoLeftMax)  targetServo = servoLeftMax;
+    }
+  }
+  else {
+    targetServo = servoStraight;
+  }
+  
+  // ----- Steg 4: Mjuk övergång (smoothing) av servovinkel -----
+  if (targetServo > currentServoAngle) {
+    currentServoAngle += min(servoStep, targetServo - currentServoAngle);
+  } else if (targetServo < currentServoAngle) {
+    currentServoAngle -= min(servoStep, currentServoAngle - targetServo);
+  }
+  steeringServo.write(currentServoAngle);
+  Serial.print("Servo: "); Serial.println(currentServoAngle);
+  
+  if (state == DRIVING) {
+    digitalWrite(MOTOR_DIR_PIN, HIGH);
+    analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+  }
+}
