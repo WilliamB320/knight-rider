@@ -1,0 +1,161 @@
+#include <Wire.h>
+#include <OPT3101.h>
+#include <ESP32Servo.h>
+
+#define SERVO_PIN         9    // Servopinne
+#define MOTOR_SPEED_PIN   A1   // PWM-pin för motorhastighet (enable-ingång, M1A)
+#define MOTOR_DIR_PIN     B1   // Digital utgång för motorriktning (M1B)
+#define START_BUTTON_PIN  3    // DIGITAL ingång med intern pull‑down
+
+Servo myservo;               // Servo‑objekt
+OPT3101 sensor;
+
+// --- Servo-inställningar ---
+const int servoStraight = 90;
+const int servoLeftMax  = 135;
+const int servoRightMax = 45;
+int servoPosition = servoStraight;
+
+// --- Sensorvariabler (i mm) ---
+int sensorRight = 800;
+int sensorFront = 800;
+int sensorLeft  = 800;
+
+// --- Tröskelvärden för mapping ---
+const int Safe    = 400;
+const int NotSafe = 300;
+
+// --- State machine för körning ---
+enum DriveState { FORWARD, STOPPED, REVERSING };
+DriveState driveState = FORWARD;
+unsigned long stateChangeTime = 0;
+const unsigned long stopDuration = 1000; // ms
+
+// --- Motorinställningar ---
+int motorSpeedVal = 200;  // PWM (0-255)
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("🔄 Startar systemet...");
+
+  // --- START‑KNAPP som INPUT med intern pull‑down ---
+  pinMode(START_BUTTON_PIN, INPUT_PULLDOWN);
+
+  // Initiera I2C och sensor
+  Wire.begin(A4, A5);
+  sensor.init();
+  if (sensor.getLastError()) {
+    Serial.print("❌ Sensorfel: ");
+    Serial.println(sensor.getLastError());
+    while (1);
+  }
+  sensor.configureDefault();
+  sensor.setFrameTiming(32);
+  sensor.setBrightness(OPT3101Brightness::High);
+  sensor.enableTimingGenerator();
+  sensor.setChannel(0);
+  sensor.startSample();
+
+  // Initiera servo
+  myservo.attach(SERVO_PIN);
+  myservo.write(servoStraight);
+
+  // Initiera motorpinnar
+  pinMode(MOTOR_SPEED_PIN, OUTPUT);
+  pinMode(MOTOR_DIR_PIN, OUTPUT);
+  // Håll motorn avstängd tills vi trycker på start
+  analogWrite(MOTOR_SPEED_PIN, 0);
+  digitalWrite(MOTOR_DIR_PIN, LOW);
+
+  Serial.println("✅ System klart! Väntar på START‑knapp.");
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  // --- Läs START‑knappen ---
+  bool startPressed = digitalRead(START_BUTTON_PIN);
+  if (!startPressed) {
+    // Om inte intryckt: håll allt avstängt och gå ut ur loop
+    analogWrite(MOTOR_SPEED_PIN, 0);
+    // (valfritt) kan också hålla servo rakt:
+    // myservo.write(servoStraight);
+    delay(50);
+    return;
+  }
+
+  // --- Sensoravläsning ---
+  if (sensor.isSampleDone()) {
+    sensor.readOutputRegs();
+    int distance = sensor.distanceMillimeters;
+    int channel  = sensor.channelUsed;
+    if (distance != 0) {
+      if      (channel == 0) sensorRight = distance;
+      else if (channel == 1) sensorFront = distance;
+      else                   sensorLeft  = distance;
+      Serial.printf("Kanal %d: %d mm\n", channel, distance);
+    }
+    // Växla kanal
+    sensor.setChannel((channel + 1) % 3);
+    sensor.startSample();
+  }
+
+  // --- State Machine ---
+  if (driveState == FORWARD) {
+    if (sensorFront < 50) {
+      Serial.println("🚨 Hinder FRAMFÖR! Stoppar bilen.");
+      driveState = STOPPED;
+      stateChangeTime = currentTime;
+      analogWrite(MOTOR_SPEED_PIN, 0);
+    }
+    else {
+      // Styr servo
+      int newServo = servoStraight;
+      if (sensorLeft < Safe && sensorLeft < sensorRight) {
+        newServo = map(sensorLeft, NotSafe, Safe, servoRightMax, servoStraight);
+        Serial.println("🔄 Hinder på vänster, svänger höger.");
+      }
+      else if (sensorRight < Safe && sensorRight < sensorLeft) {
+        newServo = map(sensorRight, NotSafe, Safe, servoLeftMax,  servoStraight);
+        Serial.println("🔄 Hinder på höger, svänger vänster.");
+      }
+      else {
+        int error = sensorLeft - sensorRight;
+        if (abs(error) < 30) error = 0;
+        newServo = servoStraight + (int)(0.10 * error);
+      }
+      newServo = constrain(newServo, servoRightMax, servoLeftMax);
+      if (newServo != servoPosition) {
+        servoPosition = newServo;
+        myservo.write(servoPosition);
+      }
+
+      // Kör framåt
+      digitalWrite(MOTOR_DIR_PIN, LOW);
+      analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+    }
+  }
+  else if (driveState == STOPPED) {
+    // Håll avstängt
+    analogWrite(MOTOR_SPEED_PIN, 0);
+
+    if (currentTime - stateChangeTime >= stopDuration) {
+      Serial.println("➡️ Börjar backa.");
+      driveState = REVERSING;
+      myservo.write(servoStraight);
+    }
+  }
+  else if (driveState == REVERSING) {
+    // Backa
+    digitalWrite(MOTOR_DIR_PIN, HIGH);
+    analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+
+    if (sensorFront > 100) {
+      Serial.println("✅ Fri väg, framåt igen.");
+      driveState = FORWARD;
+    }
+    myservo.write(servoStraight);
+  }
+
+  delay(10);
+}
