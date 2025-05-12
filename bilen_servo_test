@@ -1,0 +1,141 @@
+#include <ESP32Servo.h>
+
+// **** Pin-konfiguration ****
+const int TRIG_FRONT      = 13;
+const int ECHO_FRONT      = 12;
+const int TRIG_LEFT       = 10;
+const int ECHO_LEFT       = 8;
+const int TRIG_RIGHT      = 7;
+const int ECHO_RIGHT      = 6;
+const int SERVO_PIN       = 9;
+const int MOTOR_SPEED_PIN = A1;  // PWM för motorhastighet
+const int MOTOR_DIR_PIN   = B1;  // Motorriktning
+
+// **** Servo-inställningar ****
+const int servoStraight     = 120;   // Hjul i rakt läge
+const int servoLeftMax      = 180;  // Max vänstersväng
+const int servoRightMax     = 45;   // Max högersväng
+int currentServoAngle       = servoStraight;
+
+// **** Sensorvariabler (cm) ****
+int sensorFront = 100;
+int sensorLeft  = 100;
+int sensorRight = 100;
+
+// **** Laterala trösklar ****
+const int emergencyThreshold = 15;  // Om sensorvärde <15 cm, nödkorrigering
+
+// **** Proportionell styrning ****
+float Kp              = 0.4;   // Proportionalfaktor
+float lateralDeadZone = 30.0;  // Dödzon (cm)
+
+// **** Motor/Styr State Machine ****
+enum CarState { DRIVING, STOPPED };
+CarState state = DRIVING;
+const int frontStopDist  = 20;  // Stanna om hinder är närmare (cm)
+const int frontClearDist = 30;  // Återuppta körning om fritt (cm)
+int motorSpeedVal       = 100;  // PWM-värde för motorhastighet
+
+Servo steeringServo;
+
+// Funktion: Läs avstånd från HC-SR04 (cm)
+long readUltrasonicCM(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH);
+  if (duration == 0) return 100;
+  return duration / 58;
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(500);
+  Serial.println("🔄 Startar system...");
+
+  // Initiera pins
+  pinMode(TRIG_FRONT,      OUTPUT);
+  pinMode(ECHO_FRONT,      INPUT);
+  pinMode(TRIG_LEFT,       OUTPUT);
+  pinMode(ECHO_LEFT,       INPUT);
+  pinMode(TRIG_RIGHT,      OUTPUT);
+  pinMode(ECHO_RIGHT,      INPUT);
+  pinMode(MOTOR_SPEED_PIN, OUTPUT);
+  pinMode(MOTOR_DIR_PIN,   OUTPUT);
+
+  // Initiera servo
+  steeringServo.attach(SERVO_PIN);
+  steeringServo.write(servoStraight);
+
+  // Starta motor framåt
+  digitalWrite(MOTOR_DIR_PIN, HIGH);
+  analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+}
+
+void loop() {
+  // Läs sensorer
+  sensorFront = readUltrasonicCM(TRIG_FRONT, ECHO_FRONT);
+  sensorLeft  = readUltrasonicCM(TRIG_LEFT, ECHO_LEFT);
+  sensorRight = readUltrasonicCM(TRIG_RIGHT, ECHO_RIGHT);
+
+  Serial.print("Front: "); Serial.print(sensorFront);
+  Serial.print(" cm, Left: "); Serial.print(sensorLeft);
+  Serial.print(" cm, Right: "); Serial.print(sensorRight);
+  Serial.println(" cm");
+
+  // Hantera stopp/start framåt
+  if (state == DRIVING) {
+    if (sensorFront < frontStopDist) {
+      Serial.println("🚨 Hinder fram! Stoppar.");
+      analogWrite(MOTOR_SPEED_PIN, 0);
+      state = STOPPED;
+    }
+  } else {
+    if (sensorFront > frontClearDist) {
+      Serial.println("✅ Vägen fri! Kör framåt.");
+      digitalWrite(MOTOR_DIR_PIN, HIGH);
+      analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+      state = DRIVING;
+    }
+  }
+
+  // Beräkna målservo (endast i DRIVING)
+  int targetServo = servoStraight;
+  if (state == DRIVING) {
+    // Kontrollera höger först för att säkra vänstersväng
+    if (sensorRight < emergencyThreshold) {
+      Serial.println("‼️ Akut: Höger nära → vänster sväng");
+      targetServo = servoLeftMax;
+    }
+    else if (sensorLeft < emergencyThreshold) {
+      Serial.println("‼️ Akut: Vänster nära → höger sväng");
+      targetServo = servoRightMax;
+    }
+    else {
+      float error = sensorLeft - sensorRight;  // inverterat fel för proportionell styrning
+      if (fabs(error) < lateralDeadZone) {
+        targetServo = servoStraight;
+        Serial.println("✅ Inom dödzon");
+      } else {
+        targetServo = servoStraight + int(Kp * error);
+        Serial.println("🔄 Proportionell styrning: error=" + String(error));
+      }
+      targetServo = constrain(targetServo, servoRightMax, servoLeftMax);
+    }
+  }
+
+  // Exponentiell smoothing: 25% av felet per loop: 25% av felet per loop
+  currentServoAngle += (targetServo - currentServoAngle) / 4;
+  steeringServo.write(currentServoAngle);
+  Serial.print("Servo: "); Serial.println(currentServoAngle);
+
+  // Se till att motorn är igång om vi kör
+  if (state == DRIVING) {
+    digitalWrite(MOTOR_DIR_PIN, HIGH);
+    analogWrite(MOTOR_SPEED_PIN, motorSpeedVal);
+  }
+
+  // Kort loop-delay för jämn uppdatering (~50 Hz)
+}
