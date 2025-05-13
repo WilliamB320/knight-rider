@@ -1,0 +1,110 @@
+#include <ESP32Servo.h>
+
+// **** Pin-konfiguration ****
+const int TRIG_FRONT       = 13;
+const int ECHO_FRONT       = 12;
+const int TRIG_LEFT        = 10;
+const int ECHO_LEFT        = 8;
+const int TRIG_RIGHT       = 7;
+const int ECHO_RIGHT       = 6;
+const int SERVO_PIN        = 9;
+const int MOTOR_SPEED_PIN  = A1;
+const int MOTOR_DIR_PIN    = B1;
+const int START_BUTTON_PIN = 3;
+
+// **** Servo-vinklar ****
+const int SERVO_STRAIGHT   = 120;
+const int SERVO_LEFT       = 180;
+const int SERVO_RIGHT      =  0;
+
+// **** Trösklar ****
+const int STOP_DIST        = 60;  // stanna < 60 cm
+const int CLEAR_DIST       = 70;  // kör igen > 70 cm
+const int SIDE_DIST        = 30;  // sidostyrning < 30 cm
+
+Servo steeringServo;
+
+enum State { DRIVING, STOPPED };
+State state      = STOPPED;   // start stilla
+int motorSpeed   = 120;
+
+// Läs HC-SR04
+long readUltrasonic(int trig, int echo) {
+  digitalWrite(trig, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trig, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trig, LOW);
+  long d = pulseIn(echo, HIGH, 30000);
+  return d ? d/58 : 300;
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(START_BUTTON_PIN, INPUT_PULLDOWN);
+  pinMode(TRIG_FRONT, OUTPUT);    pinMode(ECHO_FRONT, INPUT);
+  pinMode(TRIG_LEFT, OUTPUT);     pinMode(ECHO_LEFT, INPUT);
+  pinMode(TRIG_RIGHT, OUTPUT);    pinMode(ECHO_RIGHT, INPUT);
+  pinMode(MOTOR_SPEED_PIN, OUTPUT);
+  pinMode(MOTOR_DIR_PIN, OUTPUT);
+
+  steeringServo.attach(SERVO_PIN);
+  steeringServo.write(SERVO_STRAIGHT);
+
+  analogWrite(MOTOR_SPEED_PIN, 0);
+  digitalWrite(MOTOR_DIR_PIN, LOW);
+
+  Serial.println("✅ Klart, tryck START för att köra.");
+}
+
+void loop() {
+  // --- Vänta på START-knapp ---
+  if (digitalRead(START_BUTTON_PIN) == LOW) {
+    // håll motor av och servo rakt
+    analogWrite(MOTOR_SPEED_PIN, 0);
+    steeringServo.write(SERVO_STRAIGHT);
+    delay(20);
+    return;
+  }
+
+  // --- Om vi just tryckt START, sätt motorn igång ---
+  if (state == STOPPED) {
+    digitalWrite(MOTOR_DIR_PIN, HIGH);
+    analogWrite(MOTOR_SPEED_PIN, motorSpeed);
+    state = DRIVING;
+    Serial.println("🚀 Kör igång!");
+  }
+
+  // --- Läs sensorer ---
+  int front = readUltrasonic(TRIG_FRONT, ECHO_FRONT);
+  int left  = readUltrasonic(TRIG_LEFT,  ECHO_LEFT);
+  int right = readUltrasonic(TRIG_RIGHT, ECHO_RIGHT);
+  Serial.printf("F:%d  L:%d  R:%d\n", front, left, right);
+
+  // --- Alltid: enkel sidostyrning beroende på left/right ---
+  if (left < SIDE_DIST) {
+    steeringServo.write(SERVO_RIGHT);    // vrid skarpt höger
+  }
+  else if (right < SIDE_DIST) {
+    steeringServo.write(SERVO_LEFT);     // vrid skarpt vänster
+  }
+  else {
+    steeringServo.write(SERVO_STRAIGHT); // rakt fram
+  }
+
+  // --- Motor-logik (högprioritet: frontstop) ---
+  if (state == DRIVING && front < STOP_DIST) {
+    analogWrite(MOTOR_SPEED_PIN, 0);
+    state = STOPPED;
+    Serial.println("🚨 STOP");
+  }
+  else if (state == STOPPED && front > CLEAR_DIST) {
+    digitalWrite(MOTOR_DIR_PIN, HIGH);
+    analogWrite(MOTOR_SPEED_PIN, motorSpeed);
+    state = DRIVING;
+    Serial.println("✅ DRIVE");
+  }
+
+  delay(20);
+}
